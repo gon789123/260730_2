@@ -35,23 +35,38 @@ def fetch_boxoffice(target_dt: str):
 
 @st.cache_data(ttl=86400)  # 영화 상세정보는 거의 안 바뀌므로 하루 캐싱
 def fetch_movie_info(movie_cd: str):
+    """영화 상세정보를 가져온다. 실패 시 원인을 담은 error 키를 함께 반환한다."""
     try:
         res = requests.get(INFO_URL, params={"key": KOBIS_KEY, "movieCd": movie_cd}, timeout=10)
-        info = res.json().get("movieInfoResult", {}).get("movieInfo", {})
-        directors = ", ".join(d["peopleNm"] for d in info.get("directors", []))
-        actors = ", ".join(a["peopleNm"] for a in info.get("actors", [])[:3])  # 상위 3명만
-        genres = ", ".join(g["genreNm"] for g in info.get("genres", []))
-        nation = ", ".join(n["nationNm"] for n in info.get("nations", []))
-        return {
-            "감독": directors or "-",
-            "주요배우": actors or "-",
-            "장르": genres or "-",
-            "국가": nation or "-",
-            "상영시간": f"{info.get('showTm', '-')}분",
-            "관람등급": info.get("audits", [{}])[0].get("watchGradeNm", "-") if info.get("audits") else "-",
-        }
-    except Exception:
-        return None
+    except requests.exceptions.RequestException as e:
+        return {"error": f"네트워크 오류: {e}"}
+
+    if res.status_code != 200:
+        return {"error": f"API 상태코드 오류: {res.status_code}"}
+
+    data = res.json()
+    if "faultInfo" in data:
+        return {"error": f"KOBIS 오류: {data['faultInfo'].get('message', '알 수 없음')}"}
+
+    info = data.get("movieInfoResult", {}).get("movieInfo", {})
+    if not info:
+        return {"error": "이 영화는 KOBIS 상세정보 DB에 등록되어 있지 않습니다."}
+
+    directors = ", ".join(d.get("peopleNm", "") for d in info.get("directors", [])) or "-"
+    actors = ", ".join(a.get("peopleNm", "") for a in info.get("actors", [])[:3]) or "-"
+    genres = ", ".join(g.get("genreNm", "") for g in info.get("genres", [])) or "-"
+    nation = ", ".join(n.get("nationNm", "") for n in info.get("nations", [])) or "-"
+    audits = info.get("audits", [])
+    grade = audits[0].get("watchGradeNm", "-") if audits else "-"
+
+    return {
+        "감독": directors,
+        "주요배우": actors,
+        "장르": genres,
+        "국가": nation,
+        "상영시간": f"{info.get('showTm', '-')}분",
+        "관람등급": grade,
+    }
 
 
 df, err = fetch_boxoffice(target_dt)
@@ -62,14 +77,14 @@ if err:
 for col in ["rank", "audiCnt", "audiAcc", "scrnCnt", "showCnt", "rankInten"]:
     df[col] = pd.to_numeric(df[col])
 
-# 5. 파생 지표: 스크린당 관객수
+# 스크린당 관객수
 df["스크린당관객"] = (df["audiCnt"] / df["scrnCnt"]).round(0)
 
-# 1. 영화 상세정보 병합 (국가 구분 위해 필요)
+# 영화 상세정보 병합 (국가/장르 구분 위해 필요)
 with st.spinner("영화 상세정보 불러오는 중..."):
     info_list = [fetch_movie_info(code) for code in df["movieCd"]]
-df["국가"] = [info["국가"] if info else "-" for info in info_list]
-df["장르"] = [info["장르"] if info else "-" for info in info_list]
+df["국가"] = [info.get("국가", "-") if "error" not in info else "-" for info in info_list]
+df["장르"] = [info.get("장르", "-") if "error" not in info else "-" for info in info_list]
 
 # 1위 영화 지표 카드
 top = df.sort_values("rank").iloc[0]
@@ -99,7 +114,7 @@ table = table.sort_values("순위").reset_index(drop=True)
 st.subheader("📋 박스오피스 TOP 10")
 st.dataframe(table, use_container_width=True)
 
-# 2. 한국영화 vs 외국영화 점유율
+# 한국영화 vs 외국영화 점유율
 st.subheader("🌏 한국영화 vs 외국영화 관객 점유율")
 
 
@@ -122,7 +137,7 @@ st.subheader("📈 관객수 상위 5편")
 top5 = table.sort_values("관객수", ascending=False).head(5)
 st.bar_chart(top5.set_index("영화명")["관객수"])
 
-# 5. 스크린당 관객수 랭킹 (효율 좋은 영화 찾기)
+# 스크린당 관객수 랭킹 (효율 좋은 영화 찾기)
 st.subheader("🎯 스크린당 관객수 TOP 5 (효율 순)")
 efficiency = table.sort_values("스크린당관객", ascending=False).head(5)
 st.bar_chart(efficiency.set_index("영화명")["스크린당관객"])
@@ -133,7 +148,8 @@ st.subheader("🎬 영화 상세정보")
 selected_movie = st.selectbox("영화 선택", table["영화명"].tolist())
 selected_code = df[df["movieNm"] == selected_movie]["movieCd"].iloc[0]
 info = fetch_movie_info(selected_code)
-if info:
+
+if "error" not in info:
     d1, d2, d3 = st.columns(3)
     d1.write(f"**감독**\n\n{info['감독']}")
     d2.write(f"**주요 배우**\n\n{info['주요배우']}")
@@ -142,4 +158,4 @@ if info:
     d4.write(f"**장르**\n\n{info['장르']}")
     d5.write(f"**상영시간**\n\n{info['상영시간']}")
 else:
-    st.info("상세정보를 불러오지 못했습니다.")
+    st.info(f"상세정보를 불러오지 못했습니다. ({info['error']})")
