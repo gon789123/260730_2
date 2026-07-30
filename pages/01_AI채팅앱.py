@@ -17,9 +17,22 @@ SYSTEM_PROMPT = (
     "어려운 말은 쉬운 말로 바꿔 주고, 반드시 순수 한국어로만 답해"
 )
 
+# 학생들이 처음 질문하기 쉽도록 준비한 예시 질문 목록
+EXAMPLE_QUESTIONS = [
+    "AI는 어떻게 사람처럼 대답할 수 있어?",
+    "코딩을 왜 배워야 해?",
+    "인터넷은 어떻게 전 세계에 연결되어 있어?",
+    "파이썬이랑 다른 언어는 뭐가 달라?",
+    "컴퓨터는 어떻게 0과 1만으로 작동해?",
+]
+
 # 대화 기록이 없으면 처음 한 번만 만들어 둔다
 if "messages" not in st.session_state:
     st.session_state.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+# 버튼으로 눌린 질문을 임시로 담아 둘 자리
+if "pending_question" not in st.session_state:
+    st.session_state.pending_question = None
 
 # 지금까지의 대화를 말풍선으로 다시 그리기 (성격 문장은 숨김)
 for msg in st.session_state.messages:
@@ -27,14 +40,27 @@ for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
+# 대화가 아직 시작되지 않았을 때만 예시 질문 버튼 보여주기
+if len(st.session_state.messages) == 1:
+    st.markdown("**💡 무엇을 물어봐야 할지 모르겠다면, 아래 질문을 눌러보세요!**")
+    cols = st.columns(len(EXAMPLE_QUESTIONS))
+    for col, question in zip(cols, EXAMPLE_QUESTIONS):
+        with col:
+            if st.button(question, use_container_width=True):
+                st.session_state.pending_question = question
+
 # 채팅 입력창
 user_input = st.chat_input("궁금한 것을 물어보세요!")
 
-if user_input:
+# 버튼 클릭이 있었다면 그 질문을, 없다면 직접 입력한 질문을 사용
+final_input = st.session_state.pending_question or user_input
+st.session_state.pending_question = None  # 한 번 쓰고 나면 초기화
+
+if final_input:
     # 보낸 말을 기록에 넣고 화면에도 그리기
-    st.session_state.messages.append({"role": "user", "content": user_input})
+    st.session_state.messages.append({"role": "user", "content": final_input})
     with st.chat_message("user"):
-        st.markdown(user_input)
+        st.markdown(final_input)
 
     # AI 답 받아오기 (실패하면 빨간 오류 화면 대신 안내 문구)
     with st.chat_message("assistant"):
